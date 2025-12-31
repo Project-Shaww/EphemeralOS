@@ -12,7 +12,6 @@ static char username[64];
 
 static void parse_command(char* cmd, char** args, int* argc) {
     *argc = 0;
-    char* token = cmd;
     int in_token = 0;
 
     while (*cmd) {
