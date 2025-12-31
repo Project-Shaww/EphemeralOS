@@ -132,6 +132,7 @@ static void read_inode_block(uint32_t block_num, uint8_t* buffer) {
         memset(buffer, 0, 512);
         return;
     }
+    memset(buffer, 0, 512);  // Limpiar primero
     disk_read_sectors(FS_DATA_START_SECTOR + block_num, 1, buffer);
 }
 
@@ -143,81 +144,126 @@ static void write_inode_block(uint32_t block_num, uint8_t* buffer) {
 }
 
 // ============================================================================
-// FUNCIONES DE RUTAS
+// FUNCIONES DE RUTAS - MEJORADAS
 // ============================================================================
 
-static void split_path(const char* path, char* parent, char* name) {
+static void normalize_path(const char* path, char* normalized) {
+    // Si no empieza con /, añadirlo
+    int j = 0;
+    
     if (path[0] != '/') {
+        normalized[j++] = '/';
+    }
+    
+    // Eliminar barras duplicadas y trailing slashes
+    int last_was_slash = (path[0] == '/') ? 1 : 0;
+    
+    for (int i = 0; path[i]; i++) {
+        if (path[i] == '/') {
+            if (!last_was_slash && j > 0) {
+                normalized[j++] = '/';
+                last_was_slash = 1;
+            } else if (j == 0) {
+                normalized[j++] = '/';
+                last_was_slash = 1;
+            }
+        } else {
+            normalized[j++] = path[i];
+            last_was_slash = 0;
+        }
+    }
+    
+    // Eliminar trailing slash excepto para root
+    if (j > 1 && normalized[j-1] == '/') {
+        j--;
+    }
+    
+    normalized[j] = '\0';
+    
+    // Caso especial: path vacío se convierte en "/"
+    if (j == 0) {
+        normalized[0] = '/';
+        normalized[1] = '\0';
+    }
+}
+
+static void split_path(const char* path, char* parent, char* name) {
+    char normalized[256];
+    normalize_path(path, normalized);
+    
+    if (strcmp(normalized, "/") == 0) {
         strcpy(parent, "/");
-        strcpy(name, path);
+        name[0] = '\0';
         return;
     }
     
-    const char* last_slash = path;
-    for (const char* p = path; *p; p++) {
+    const char* last_slash = normalized;
+    for (const char* p = normalized; *p; p++) {
         if (*p == '/') last_slash = p;
     }
     
-    if (last_slash == path) {
+    if (last_slash == normalized) {
+        // Path como "/bin"
         strcpy(parent, "/");
-        strcpy(name, path + 1);
+        strcpy(name, last_slash + 1);
     } else {
-        int parent_len = last_slash - path;
-        memcpy(parent, path, parent_len);
+        // Path como "/home/user"
+        int parent_len = last_slash - normalized;
+        memcpy(parent, normalized, parent_len);
         parent[parent_len] = '\0';
         strcpy(name, last_slash + 1);
     }
 }
 
 static uint32_t find_inode_by_path(const char* path) {
-    if (strcmp(path, "/") == 0) {
+    char normalized[256];
+    normalize_path(path, normalized);
+    
+    if (strcmp(normalized, "/") == 0) {
         return superblock.root_inode;
     }
     
-    char remaining_path[256];
-    strcpy(remaining_path, path);
+    uint32_t current_inode = superblock.root_inode;
+    const char* p = normalized + 1;
     
-    if (remaining_path[0] == '/') {
-        memmove(remaining_path, remaining_path + 1, strlen(remaining_path));
+    if (*p == '\0') {
+        return superblock.root_inode;
     }
     
-    uint32_t current_inode = superblock.root_inode;
-    char* token = remaining_path;
-    
-    while (*token) {
-        char* next_slash = token;
-        while (*next_slash && *next_slash != '/') next_slash++;
+    while (*p) {
+        const char* next_slash = p;
+        while (*next_slash && *next_slash != '/') {
+            next_slash++;
+        }
         
         char component[FS_MAX_FILENAME];
-        int len = next_slash - token;
-        memcpy(component, token, len);
+        int len = next_slash - p;
+        if (len >= FS_MAX_FILENAME) {
+            return 0xFFFFFFFF;
+        }
+        memcpy(component, p, len);
         component[len] = '\0';
         
-        if (len == 0) break;
-        
         if (current_inode >= FS_MAX_INODES) {
-            screen_print("[DEBUG] find_inode_by_path: Inode out of bounds!\n");
             return 0xFFFFFFFF;
         }
         
         if (inode_table[current_inode].type != INODE_TYPE_DIR) {
-            screen_print("[DEBUG] find_inode_by_path: Not a directory!\n");
             return 0xFFFFFFFF;
         }
         
         if (inode_table[current_inode].blocks[0] == 0 || 
             inode_table[current_inode].blocks[0] >= FS_MAX_BLOCKS) {
-            if (inode_table[current_inode].blocks[0] == 0) screen_print("[DEBUG] find_inode_by_path: Block is 0!\n");
-            if (inode_table[current_inode].blocks[0] >= FS_MAX_BLOCKS) screen_print("[DEBUG] find_inode_by_path: Block out of bounds!\n");
             return 0xFFFFFFFF;
         }
         
         fs_dir_block_t dir_block;
+        memset(&dir_block, 0, sizeof(fs_dir_block_t));
         read_inode_block(inode_table[current_inode].blocks[0], (uint8_t*)&dir_block);
         
         uint32_t found_inode = 0xFFFFFFFF;
         for (int i = 0; i < FS_MAX_DIR_ENTRIES; i++) {
-            if (dir_block.entries[i].in_use && 
+            if (dir_block.entries[i].in_use == 1 && 
                 strcmp(dir_block.entries[i].name, component) == 0) {
                 found_inode = dir_block.entries[i].inode;
                 break;
@@ -231,7 +277,10 @@ static uint32_t find_inode_by_path(const char* path) {
         current_inode = found_inode;
         
         if (*next_slash == '/') {
-            token = next_slash + 1;
+            p = next_slash + 1;
+            if (*p == '\0') {
+                break;
+            }
         } else {
             break;
         }
@@ -281,7 +330,22 @@ void fs_format(void) {
 }
 
 void fs_install(const char* hostname, const char* username, const char* password) {
-    fs_format();
+    screen_print("[INSTALL] Starting filesystem installation...\n");
+    
+    // Limpiar TODO primero
+    memset(&superblock, 0, sizeof(fs_superblock_t));
+    memset(inode_table, 0, sizeof(inode_table));
+    memset(block_bitmap, 0, sizeof(block_bitmap));
+    
+    // Inicializar superblock
+    superblock.magic = FS_MAGIC;
+    superblock.version = FS_VERSION;
+    superblock.total_inodes = FS_MAX_INODES;
+    superblock.total_blocks = FS_MAX_BLOCKS;
+    superblock.free_inodes = FS_MAX_INODES;
+    superblock.free_blocks = FS_MAX_BLOCKS;
+    superblock.root_inode = 0;
+    superblock.installed = 0;
     
     strcpy(superblock.hostname, hostname);
     strcpy(superblock.username, username);
@@ -291,54 +355,86 @@ void fs_install(const char* hostname, const char* username, const char* password
         superblock.password_hash[i] = (hash >> (i % 32)) & 0xFF;
     }
     
-    // Crear el inodo raíz (forzar que sea el inodo 0)
-    uint32_t root_inode = 0;
+    // Inicializar todos los inodos como libres
+    for (uint32_t i = 0; i < FS_MAX_INODES; i++) {
+        inode_table[i].type = INODE_TYPE_FREE;
+        inode_table[i].size = 0;
+        inode_table[i].parent_inode = 0;
+        for (int j = 0; j < FS_INODE_DIRECT_BLOCKS; j++) {
+            inode_table[i].blocks[j] = 0;
+        }
+    }
+    
+    // Crear el inodo raíz MANUALMENTE (inodo 0)
     inode_table[0].type = INODE_TYPE_DIR;
     inode_table[0].size = 0;
     inode_table[0].parent_inode = 0;
     superblock.free_inodes--;
     
-    // Asignar bloque para el directorio raíz
-    uint32_t root_block = allocate_block();
-    inode_table[root_inode].blocks[0] = root_block;
+    // Asignar el primer bloque (bloque 1) para el directorio raíz
+    block_bitmap[0] |= (1 << 1);
+    superblock.free_blocks--;
+    inode_table[0].blocks[0] = 1;
     
     // Inicializar el directorio raíz
     fs_dir_block_t root_dir;
     memset(&root_dir, 0, sizeof(fs_dir_block_t));
     
     strcpy(root_dir.entries[0].name, ".");
-    root_dir.entries[0].inode = root_inode;
+    root_dir.entries[0].inode = 0;
     root_dir.entries[0].in_use = 1;
     
     strcpy(root_dir.entries[1].name, "..");
-    root_dir.entries[1].inode = root_inode;
+    root_dir.entries[1].inode = 0;
     root_dir.entries[1].in_use = 1;
     
-    write_inode_block(root_block, (uint8_t*)&root_dir);
+    write_inode_block(1, (uint8_t*)&root_dir);
     
-    // Configurar el superblock ANTES de crear subdirectorios
-    superblock.root_inode = root_inode;
+    // Marcar como instalado
     superblock.installed = 1;
     
-    // Sincronizar ANTES de crear subdirectorios
+    // Sincronizar TODO
     sync_superblock();
     sync_inode_table();
     sync_block_bitmap();
     
-    // Ahora crear los subdirectorios
+    // Recargar
+    load_superblock();
+    load_inode_table();
+    load_block_bitmap();
+    
+    screen_print("[INSTALL] Creating system directories...\n");
+    
+    // Crear directorios del sistema
     fs_create_dir("/bin");
     fs_create_dir("/home");
     fs_create_dir("/tmp");
+    fs_create_dir("/etc");
+    fs_create_dir("/var");
     
+    // Crear directorio del usuario
     char user_home[128];
     strcpy(user_home, "/home/");
     strcat(user_home, username);
     fs_create_dir(user_home);
     
-    // Sincronizar de nuevo al final
+    // Crear subdirectorios
+    char user_docs[128];
+    strcpy(user_docs, user_home);
+    strcat(user_docs, "/documents");
+    fs_create_dir(user_docs);
+    
+    char user_downloads[128];
+    strcpy(user_downloads, user_home);
+    strcat(user_downloads, "/downloads");
+    fs_create_dir(user_downloads);
+    
+    // Sincronizar final
     sync_superblock();
     sync_inode_table();
     sync_block_bitmap();
+    
+    screen_print("[INSTALL] Filesystem installation complete!\n");
 }
 
 // ============================================================================
@@ -375,12 +471,35 @@ int fs_create_dir(const char* path) {
         return -1;
     }
     
+    // Verificar si el directorio ya existe
+    uint32_t existing = find_inode_by_path(path);
+    if (existing != 0xFFFFFFFF) {
+        return 0;
+    }
+    
+    // Buscar el padre
     uint32_t parent_inode = find_inode_by_path(parent_path);
-    if (parent_inode == 0xFFFFFFFF || 
-        inode_table[parent_inode].type != INODE_TYPE_DIR) {
+    
+    if (parent_inode == 0xFFFFFFFF) {
+        // El padre no existe, intentar crearlo recursivamente
+        if (strcmp(parent_path, "/") != 0) {
+            if (fs_create_dir(parent_path) != 0) {
+                return -1;
+            }
+            parent_inode = find_inode_by_path(parent_path);
+            if (parent_inode == 0xFFFFFFFF) {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
+    }
+    
+    if (inode_table[parent_inode].type != INODE_TYPE_DIR) {
         return -1;
     }
     
+    // Crear el nuevo inode
     uint32_t new_inode = allocate_inode();
     if (new_inode == 0xFFFFFFFF) return -1;
     
@@ -388,6 +507,7 @@ int fs_create_dir(const char* path) {
     inode_table[new_inode].size = 0;
     inode_table[new_inode].parent_inode = parent_inode;
     
+    // Asignar bloque para el directorio
     uint32_t new_block = allocate_block();
     if (new_block == 0xFFFFFFFF) {
         free_inode(new_inode);
@@ -396,6 +516,7 @@ int fs_create_dir(const char* path) {
     
     inode_table[new_inode].blocks[0] = new_block;
     
+    // Inicializar el directorio con . y ..
     fs_dir_block_t new_dir;
     memset(&new_dir, 0, sizeof(fs_dir_block_t));
     
@@ -409,16 +530,25 @@ int fs_create_dir(const char* path) {
     
     write_inode_block(new_block, (uint8_t*)&new_dir);
     
+    // Añadir entrada en el directorio padre
     fs_dir_block_t parent_dir;
+    memset(&parent_dir, 0, sizeof(fs_dir_block_t));
     read_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
     
+    int added = 0;
     for (int i = 0; i < FS_MAX_DIR_ENTRIES; i++) {
-        if (!parent_dir.entries[i].in_use) {
+        if (parent_dir.entries[i].in_use != 1) {
             strcpy(parent_dir.entries[i].name, dir_name);
             parent_dir.entries[i].inode = new_inode;
             parent_dir.entries[i].in_use = 1;
+            added = 1;
             break;
         }
+    }
+    
+    if (!added) {
+        free_inode(new_inode);
+        return -1;
     }
     
     write_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
@@ -451,9 +581,6 @@ int fs_list_dir(const char* path, char* buffer, int max_size) {
     
     if (inode_table[inode].blocks[0] == 0 || 
         inode_table[inode].blocks[0] >= FS_MAX_BLOCKS) {
-        if (inode_table[inode].blocks[0] == 0) {
-            screen_print("[DEBUG] fs_list_dir: Directory is empty\n");
-        }
         buffer[0] = '\0';
         return -1;
     }
@@ -466,7 +593,7 @@ int fs_list_dir(const char* path, char* buffer, int max_size) {
     buffer[0] = '\0';
     
     for (int i = 0; i < FS_MAX_DIR_ENTRIES && written < max_size - 64; i++) {
-        if (!dir_block.entries[i].in_use) {
+        if (dir_block.entries[i].in_use != 1) {
             continue;
         }
         
@@ -562,20 +689,32 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
     if (strlen(file_name) == 0 || strlen(file_name) >= FS_MAX_FILENAME) {
         return -1;
     }
-
-    screen_print("[DEBUG] fs_create_file: Creating file ");
-    screen_print(file_name);
-    screen_print("\n");
-    screen_print("[DEBUG] fs_create_file: Parent path: ");
-    screen_print(parent_path);
-    screen_print("\n");
     
+    // Buscar el directorio padre
     uint32_t parent_inode = find_inode_by_path(parent_path);
-    if (parent_inode == 0xFFFFFFFF || 
-        inode_table[parent_inode].type != INODE_TYPE_DIR) {
+    if (parent_inode == 0xFFFFFFFF) {
+        // El padre no existe, intentar crearlo
+        if (fs_create_dir(parent_path) != 0) {
+            return -1;
+        }
+        parent_inode = find_inode_by_path(parent_path);
+        if (parent_inode == 0xFFFFFFFF) {
+            return -1;
+        }
+    }
+    
+    if (inode_table[parent_inode].type != INODE_TYPE_DIR) {
         return -1;
     }
     
+    // Verificar si el archivo ya existe
+    uint32_t existing = find_inode_by_path(path);
+    if (existing != 0xFFFFFFFF) {
+        // El archivo ya existe, eliminarlo primero
+        fs_delete_file(path);
+    }
+    
+    // Crear el nuevo inode
     uint32_t new_inode = allocate_inode();
     if (new_inode == 0xFFFFFFFF) return -1;
     
@@ -583,11 +722,14 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
     inode_table[new_inode].size = size;
     inode_table[new_inode].parent_inode = parent_inode;
     
+    // Calcular bloques necesarios
     uint32_t blocks_needed = (size + FS_BLOCK_SIZE - 1) / FS_BLOCK_SIZE;
     if (blocks_needed > FS_INODE_DIRECT_BLOCKS) {
         blocks_needed = FS_INODE_DIRECT_BLOCKS;
     }
     
+    // Asignar bloques y escribir datos
+    uint32_t remaining = size;
     for (uint32_t i = 0; i < blocks_needed; i++) {
         uint32_t block = allocate_block();
         if (block == 0xFFFFFFFF) {
@@ -597,12 +739,13 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
         inode_table[new_inode].blocks[i] = block;
         
         memset(sector_buffer, 0, FS_BLOCK_SIZE);
-        uint32_t copy_size = size > FS_BLOCK_SIZE ? FS_BLOCK_SIZE : size;
+        uint32_t copy_size = remaining > FS_BLOCK_SIZE ? FS_BLOCK_SIZE : remaining;
         memcpy(sector_buffer, data + (i * FS_BLOCK_SIZE), copy_size);
         write_inode_block(block, sector_buffer);
-        size -= copy_size;
+        remaining -= copy_size;
     }
     
+    // Añadir entrada en el directorio padre
     fs_dir_block_t parent_dir;
     read_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
     
@@ -628,18 +771,16 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
     sync_block_bitmap();
     sync_superblock();
     
-    screen_print("[DEBUG] fs_create_file: File created successfully!\n");
     return 0;
 }
 
 int fs_read_file(const char* path, uint8_t* buffer, uint32_t max_size) {
     uint32_t inode = find_inode_by_path(path);
-    if (inode == 0xFFFFFFFF || inode_table[inode].type != INODE_TYPE_FILE) {
-        if(inode == 0xFFFFFFFF) screen_print("[DEBUG] fs_read_file: Inode not found!\n");
-        if(inode_table[inode].type != INODE_TYPE_FILE) screen_print("[DEBUG] fs_read_file: Not a file!\n");
-        screen_print("[DEBUG] fs_read_file: Path: ");
-        screen_print(path);
-        screen_print("\n");
+    if (inode == 0xFFFFFFFF || inode >= FS_MAX_INODES) {
+        return -1;
+    }
+    
+    if (inode_table[inode].type != INODE_TYPE_FILE) {
         return -1;
     }
     
@@ -675,8 +816,10 @@ int fs_delete_file(const char* path) {
         return -1;
     }
     
+    // Liberar el inodo y sus bloques
     free_inode(file_inode);
     
+    // Remover la entrada del directorio padre
     fs_dir_block_t parent_dir;
     read_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
     
@@ -695,4 +838,11 @@ int fs_delete_file(const char* path) {
     sync_block_bitmap();
     
     return 0;
+}
+
+int fs_file_exists(const char* path) {
+    uint32_t inode = find_inode_by_path(path);
+    if (inode == 0xFFFFFFFF) return 0;
+    if (inode >= FS_MAX_INODES) return 0;
+    return inode_table[inode].type == INODE_TYPE_FILE;
 }
