@@ -1,0 +1,6 @@
+*.bat
+*.o
+*.bin
+*.img
+*.elf
+*.exe
