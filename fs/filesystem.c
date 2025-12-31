@@ -1,5 +1,6 @@
 #include "filesystem.h"
 #include "../drivers/disk.h"
+#include "../drivers/screen.h"
 
 static fs_superblock_t superblock;
 static fs_inode_t inode_table[FS_MAX_INODES];
@@ -195,15 +196,19 @@ static uint32_t find_inode_by_path(const char* path) {
         if (len == 0) break;
         
         if (current_inode >= FS_MAX_INODES) {
+            screen_print("[DEBUG] find_inode_by_path: Inode out of bounds!\n");
             return 0xFFFFFFFF;
         }
         
         if (inode_table[current_inode].type != INODE_TYPE_DIR) {
+            screen_print("[DEBUG] find_inode_by_path: Not a directory!\n");
             return 0xFFFFFFFF;
         }
         
         if (inode_table[current_inode].blocks[0] == 0 || 
             inode_table[current_inode].blocks[0] >= FS_MAX_BLOCKS) {
+            if (inode_table[current_inode].blocks[0] == 0) screen_print("[DEBUG] find_inode_by_path: Block is 0!\n");
+            if (inode_table[current_inode].blocks[0] >= FS_MAX_BLOCKS) screen_print("[DEBUG] find_inode_by_path: Block out of bounds!\n");
             return 0xFFFFFFFF;
         }
         
@@ -446,6 +451,9 @@ int fs_list_dir(const char* path, char* buffer, int max_size) {
     
     if (inode_table[inode].blocks[0] == 0 || 
         inode_table[inode].blocks[0] >= FS_MAX_BLOCKS) {
+        if (inode_table[inode].blocks[0] == 0) {
+            screen_print("[DEBUG] fs_list_dir: Directory is empty\n");
+        }
         buffer[0] = '\0';
         return -1;
     }
@@ -554,6 +562,13 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
     if (strlen(file_name) == 0 || strlen(file_name) >= FS_MAX_FILENAME) {
         return -1;
     }
+
+    screen_print("[DEBUG] fs_create_file: Creating file ");
+    screen_print(file_name);
+    screen_print("\n");
+    screen_print("[DEBUG] fs_create_file: Parent path: ");
+    screen_print(parent_path);
+    screen_print("\n");
     
     uint32_t parent_inode = find_inode_by_path(parent_path);
     if (parent_inode == 0xFFFFFFFF || 
@@ -611,13 +626,20 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
     
     sync_inode_table();
     sync_block_bitmap();
+    sync_superblock();
     
+    screen_print("[DEBUG] fs_create_file: File created successfully!\n");
     return 0;
 }
 
 int fs_read_file(const char* path, uint8_t* buffer, uint32_t max_size) {
     uint32_t inode = find_inode_by_path(path);
     if (inode == 0xFFFFFFFF || inode_table[inode].type != INODE_TYPE_FILE) {
+        if(inode == 0xFFFFFFFF) screen_print("[DEBUG] fs_read_file: Inode not found!\n");
+        if(inode_table[inode].type != INODE_TYPE_FILE) screen_print("[DEBUG] fs_read_file: Not a file!\n");
+        screen_print("[DEBUG] fs_read_file: Path: ");
+        screen_print(path);
+        screen_print("\n");
         return -1;
     }
     
