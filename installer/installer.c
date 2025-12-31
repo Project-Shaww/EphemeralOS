@@ -38,7 +38,7 @@ void installer_run(void) {
 
     screen_set_color(0x0B, 0x00);
     screen_print("===================================\n");
-    screen_print("   EphemeralOS Installation Wizard\n");
+    screen_print("   EphemeralOS Installation\n");
     screen_print("===================================\n\n");
     screen_set_color(0x0F, 0x00);
 
