@@ -1,3 +1,4 @@
+// drivers/keyboard.c
 #include "keyboard.h"
 #include "screen.h"
 
@@ -27,6 +28,15 @@ static uint8_t inb(uint16_t port) {
     uint8_t ret;
     asm volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
+}
+
+uint8_t keyboard_get_scancode(void) {
+    while (1) {
+        uint8_t status = inb(0x64);
+        if (status & 0x01) {
+            return inb(0x60);
+        }
+    }
 }
 
 char keyboard_getchar(void) {

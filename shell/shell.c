@@ -1,110 +1,199 @@
+// shell/shell.c
 #include "shell.h"
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
 #include "../fs/filesystem.h"
 #include "../bin/commands.h"
+#include "../kernel/kernel.h"   // <-- AQUÍ está strcpy, strcmp, strlen, etc.
 
-#define MAX_COMMAND_LENGTH 256
-#define MAX_ARGS 16
+#define MAX_ARGS     20
+#define MAX_ARG_LEN  64
 
-static char current_dir[64] = "/";
-static char username[64];
+static char current_dir[256] = "/";
+static char username[64] = "";
 
-static void parse_command(char* cmd, char** args, int* argc) {
+/* =========================
+   Command table
+   ========================= */
+
+typedef struct {
+    const char* name;
+    void (*func)(int argc, char** argv);
+} command_t;
+
+extern void cmd_help(int argc, char** argv);
+extern void cmd_clear(int argc, char** argv);
+extern void cmd_ls(int argc, char** argv);
+extern void cmd_cd(int argc, char** argv);
+extern void cmd_mkdir(int argc, char** argv);
+extern void cmd_cat(int argc, char** argv);
+extern void cmd_echo(int argc, char** argv);
+extern void cmd_touch(int argc, char** argv);
+extern void cmd_rm(int argc, char** argv);
+extern void cmd_pwd(int argc, char** argv);
+extern void cmd_whoami(int argc, char** argv);
+extern void cmd_uname(int argc, char** argv);
+extern void cmd_date(int argc, char** argv);
+extern void cmd_shutdown(int argc, char** argv);
+extern void cmd_reboot(int argc, char** argv);
+
+static const command_t commands[] = {
+    {"help",     cmd_help},
+    {"clear",    cmd_clear},
+    {"ls",       cmd_ls},
+    {"cd",       cmd_cd},
+    {"mkdir",    cmd_mkdir},
+    {"cat",      cmd_cat},
+    {"echo",     cmd_echo},
+    {"touch",    cmd_touch},
+    {"rm",       cmd_rm},
+    {"pwd",      cmd_pwd},
+    {"whoami",   cmd_whoami},
+    {"uname",    cmd_uname},
+    {"date",     cmd_date},
+    {"shutdown", cmd_shutdown},
+    {"reboot",   cmd_reboot},
+};
+
+static const int num_commands = sizeof(commands) / sizeof(command_t);
+
+/* =========================
+   Argument parsing (NO malloc)
+   ========================= */
+
+static char argv_buffer[MAX_ARGS][MAX_ARG_LEN];
+
+static void parse_command(const char* input, char** argv, int* argc) {
     *argc = 0;
-    int in_token = 0;
+    int in_quotes = 0;
+    int i = 0;
+    int buf_pos = 0;
 
-    while (*cmd) {
-        if (*cmd == ' ' || *cmd == '\t') {
-            if (in_token) {
-                *cmd = '\0';
-                in_token = 0;
-            }
-        } else {
-            if (!in_token) {
-                args[(*argc)++] = cmd;
-                in_token = 1;
-            }
+    while (input[i] && *argc < MAX_ARGS) {
+        char c = input[i];
+
+        if (c == '"') {
+            in_quotes = !in_quotes;
+            i++;
+            continue;
         }
-        cmd++;
+
+        if ((c == ' ' || c == '\t') && !in_quotes) {
+            if (buf_pos > 0) {
+                argv_buffer[*argc][buf_pos] = '\0';
+                argv[*argc] = argv_buffer[*argc];
+                (*argc)++;
+                buf_pos = 0;
+            }
+            i++;
+            continue;
+        }
+
+        if (buf_pos < MAX_ARG_LEN - 1) {
+            argv_buffer[*argc][buf_pos++] = c;
+        }
+
+        i++;
     }
-    args[*argc] = NULL;
-}
 
-static void execute_command(char** args, int argc) {
-    if (argc == 0) return;
-
-    if (strcmp(args[0], "help") == 0) {
-        cmd_help(argc, args);
-    } else if (strcmp(args[0], "clear") == 0) {
-        cmd_clear(argc, args);
-    } else if (strcmp(args[0], "ls") == 0) {
-        cmd_ls(argc, args);
-    } else if (strcmp(args[0], "cat") == 0) {
-        cmd_cat(argc, args);
-    } else if (strcmp(args[0], "echo") == 0) {
-        cmd_echo(argc, args);
-    } else if (strcmp(args[0], "touch") == 0) {
-        cmd_touch(argc, args);
-    } else if (strcmp(args[0], "rm") == 0) {
-        cmd_rm(argc, args);
-    } else if (strcmp(args[0], "mkdir") == 0) {
-        cmd_mkdir(argc, args);
-    } else if (strcmp(args[0], "cd") == 0) {
-        cmd_cd(argc, args);
-    } else if (strcmp(args[0], "uname") == 0) {
-        cmd_uname(argc, args);
-    } else if (strcmp(args[0], "date") == 0) {
-        cmd_date(argc, args);
-    } else if (strcmp(args[0], "pwd") == 0) {
-        cmd_pwd(argc, args);
-    } else if (strcmp(args[0], "whoami") == 0) {
-        cmd_whoami(argc, args);
-    } else if (strcmp(args[0], "shutdown") == 0) {
-        cmd_shutdown(argc, args);
-    } else if (strcmp(args[0], "reboot") == 0) {
-        cmd_reboot(argc, args);
-    } else {
-        screen_print(args[0]);
-        screen_print(": command not found\n");
+    if (buf_pos > 0 && *argc < MAX_ARGS) {
+        argv_buffer[*argc][buf_pos] = '\0';
+        argv[*argc] = argv_buffer[*argc];
+        (*argc)++;
     }
 }
+
+/* =========================
+   Prompt
+   ========================= */
+
+static void print_prompt(void) {
+    screen_set_color(0x0A, 0x00);
+    screen_print(username);
+
+    screen_set_color(0x0F, 0x00);
+    screen_print("@");
+
+    char hostname[64];
+    fs_get_hostname(hostname);
+
+    screen_set_color(0x0B, 0x00);
+    screen_print(hostname);
+
+    screen_set_color(0x0F, 0x00);
+    screen_print(":");
+
+    screen_set_color(0x0E, 0x00);
+    screen_print(current_dir);
+
+    screen_set_color(0x0F, 0x00);
+    screen_print("$ ");
+}
+
+/* =========================
+   Shell lifecycle
+   ========================= */
 
 void shell_init(void) {
     fs_get_username(username);
     strcpy(current_dir, "/");
+
+    char user_home[128];
+    strcpy(user_home, "/home/");
+    strcat(user_home, username);
+
+    if (fs_dir_exists(user_home)) {
+        strcpy(current_dir, user_home);
+    }
 }
 
 void shell_run(void) {
-    char command[MAX_COMMAND_LENGTH];
-    char* args[MAX_ARGS];
-    int argc;
+    char command_line[256];
 
     while (1) {
-        screen_set_color(0x0A, 0x00);
-        screen_print(username);
-        screen_set_color(0x0F, 0x00);
-        
-        if (strcmp(username, "root") == 0) {
-            screen_print("# ");
-        } else {
-            screen_print("$ ");
+        print_prompt();
+
+        keyboard_getline(command_line, sizeof(command_line));
+
+        if (strlen(command_line) == 0) {
+            continue;
         }
 
-        keyboard_getline(command, MAX_COMMAND_LENGTH);
+        char* argv[MAX_ARGS];
+        int argc = 0;
 
-        parse_command(command, args, &argc);
-        execute_command(args, argc);
+        parse_command(command_line, argv, &argc);
+
+        if (argc == 0) {
+            continue;
+        }
+
+        int found = 0;
+        for (int i = 0; i < num_commands; i++) {
+            if (strcmp(commands[i].name, argv[0]) == 0) {
+                commands[i].func(argc, argv);
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+            screen_print(argv[0]);
+            screen_print(": command not found\n");
+        }
     }
 }
+
+/* =========================
+   Accessors
+   ========================= */
 
 char* shell_get_current_dir(void) {
     return current_dir;
 }
 
 void shell_set_current_dir(const char* dir) {
-    strncpy(current_dir, dir, 63);
-    current_dir[63] = '\0';
+    strcpy(current_dir, dir);
 }
 
 char* shell_get_username(void) {

@@ -1,3 +1,4 @@
+// bin/commands.c
 #include "commands.h"
 #include "../drivers/screen.h"
 #include "../fs/filesystem.h"
@@ -36,78 +37,24 @@ void cmd_ls(int argc, char** argv) {
     (void)argc;
     (void)argv;
     
-    screen_print("[DEBUG] ls called\n");
-    
     char* current_dir = shell_get_current_dir();
-    screen_print("[DEBUG] current_dir = ");
-    screen_print(current_dir);
-    screen_print("\n");
-    
     char buffer[2048];
     
-    screen_print("[DEBUG] calling fs_list_dir...\n");
     int result = fs_list_dir(current_dir, buffer, sizeof(buffer));
-    screen_print("[DEBUG] fs_list_dir returned: ");
-    
-    // Print result
-    char num[12];
-    int n = result;
-    int negative = 0;
-    if (n < 0) {
-        negative = 1;
-        n = -n;
-    }
-    int i = 0;
-    do {
-        num[i++] = '0' + (n % 10);
-        n /= 10;
-    } while (n > 0);
-    if (negative) num[i++] = '-';
-    num[i] = '\0';
-    for (int j = 0; j < i/2; j++) {
-        char t = num[j];
-        num[j] = num[i-1-j];
-        num[i-1-j] = t;
-    }
-    screen_print(num);
-    screen_print("\n");
     
     if (result < 0) {
         screen_print("ls: cannot access '");
         screen_print(current_dir);
         screen_print("': No such file or directory\n");
-        screen_print("[DEBUG] ls finished (error path)\n");
         return;
     }
     
     if (result == 0) {
-        screen_print("[DEBUG] Empty directory\n");
-        screen_print("[DEBUG] ls finished (empty path)\n");
         return;
     }
     
-    screen_print("[DEBUG] Listing entries:\n");
-    
     char* line = buffer;
-    int entry_count = 0;
     while (*line) {
-        screen_print("[DEBUG] Processing entry ");
-        char count_str[12];
-        int cn = ++entry_count;
-        int ci = 0;
-        do {
-            count_str[ci++] = '0' + (cn % 10);
-            cn /= 10;
-        } while (cn > 0);
-        count_str[ci] = '\0';
-        for (int cj = 0; cj < ci/2; cj++) {
-            char t = count_str[cj];
-            count_str[cj] = count_str[ci-1-cj];
-            count_str[ci-1-cj] = t;
-        }
-        screen_print(count_str);
-        screen_print("\n");
-        
         char* end = line;
         while (*end && *end != '\n') end++;
         
@@ -133,8 +80,6 @@ void cmd_ls(int argc, char** argv) {
             break;
         }
     }
-    
-    screen_print("[DEBUG] ls finished normally\n");
 }
 
 void cmd_cd(int argc, char** argv) {
@@ -185,9 +130,7 @@ void cmd_mkdir(int argc, char** argv) {
         }
     }
     
-    if (fs_create_dir(full_path) == 0) {
-        // Success - silent like Linux
-    } else {
+    if (fs_create_dir(full_path) != 0) {
         screen_print("mkdir: cannot create directory '");
         screen_print(argv[1]);
         screen_print("': Error\n");
