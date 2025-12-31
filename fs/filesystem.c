@@ -127,10 +127,17 @@ static void load_block_bitmap(void) {
 }
 
 static void read_inode_block(uint32_t block_num, uint8_t* buffer) {
+    if (block_num == 0 || block_num >= FS_MAX_BLOCKS) {
+        memset(buffer, 0, 512);
+        return;
+    }
     disk_read_sectors(FS_DATA_START_SECTOR + block_num, 1, buffer);
 }
 
 static void write_inode_block(uint32_t block_num, uint8_t* buffer) {
+    if (block_num == 0 || block_num >= FS_MAX_BLOCKS) {
+        return;
+    }
     disk_write_sectors(FS_DATA_START_SECTOR + block_num, 1, buffer);
 }
 
@@ -187,7 +194,16 @@ static uint32_t find_inode_by_path(const char* path) {
         
         if (len == 0) break;
         
+        if (current_inode >= FS_MAX_INODES) {
+            return 0xFFFFFFFF;
+        }
+        
         if (inode_table[current_inode].type != INODE_TYPE_DIR) {
+            return 0xFFFFFFFF;
+        }
+        
+        if (inode_table[current_inode].blocks[0] == 0 || 
+            inode_table[current_inode].blocks[0] >= FS_MAX_BLOCKS) {
             return 0xFFFFFFFF;
         }
         
@@ -195,7 +211,7 @@ static uint32_t find_inode_by_path(const char* path) {
         read_inode_block(inode_table[current_inode].blocks[0], (uint8_t*)&dir_block);
         
         uint32_t found_inode = 0xFFFFFFFF;
-        for (int i = 0; i < FS_INODE_DIRECT_BLOCKS; i++) {
+        for (int i = 0; i < FS_MAX_DIR_ENTRIES; i++) {
             if (dir_block.entries[i].in_use && 
                 strcmp(dir_block.entries[i].name, component) == 0) {
                 found_inode = dir_block.entries[i].inode;
@@ -248,6 +264,7 @@ void fs_format(void) {
     superblock.free_inodes = FS_MAX_INODES;
     superblock.free_blocks = FS_MAX_BLOCKS;
     superblock.installed = 0;
+    superblock.root_inode = 0;
     
     for (uint32_t i = 0; i < FS_MAX_INODES; i++) {
         inode_table[i].type = INODE_TYPE_FREE;
@@ -269,13 +286,18 @@ void fs_install(const char* hostname, const char* username, const char* password
         superblock.password_hash[i] = (hash >> (i % 32)) & 0xFF;
     }
     
-    uint32_t root_inode = allocate_inode();
-    inode_table[root_inode].type = INODE_TYPE_DIR;
-    inode_table[root_inode].size = 0;
-    inode_table[root_inode].parent_inode = root_inode;
+    // Crear el inodo raíz (forzar que sea el inodo 0)
+    uint32_t root_inode = 0;
+    inode_table[0].type = INODE_TYPE_DIR;
+    inode_table[0].size = 0;
+    inode_table[0].parent_inode = 0;
+    superblock.free_inodes--;
+    
+    // Asignar bloque para el directorio raíz
     uint32_t root_block = allocate_block();
     inode_table[root_inode].blocks[0] = root_block;
     
+    // Inicializar el directorio raíz
     fs_dir_block_t root_dir;
     memset(&root_dir, 0, sizeof(fs_dir_block_t));
     
@@ -289,8 +311,16 @@ void fs_install(const char* hostname, const char* username, const char* password
     
     write_inode_block(root_block, (uint8_t*)&root_dir);
     
+    // Configurar el superblock ANTES de crear subdirectorios
     superblock.root_inode = root_inode;
+    superblock.installed = 1;
     
+    // Sincronizar ANTES de crear subdirectorios
+    sync_superblock();
+    sync_inode_table();
+    sync_block_bitmap();
+    
+    // Ahora crear los subdirectorios
     fs_create_dir("/bin");
     fs_create_dir("/home");
     fs_create_dir("/tmp");
@@ -300,8 +330,7 @@ void fs_install(const char* hostname, const char* username, const char* password
     strcat(user_home, username);
     fs_create_dir(user_home);
     
-    superblock.installed = 1;
-    
+    // Sincronizar de nuevo al final
     sync_superblock();
     sync_inode_table();
     sync_block_bitmap();
@@ -378,7 +407,7 @@ int fs_create_dir(const char* path) {
     fs_dir_block_t parent_dir;
     read_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
     
-    for (int i = 0; i < FS_INODE_DIRECT_BLOCKS; i++) {
+    for (int i = 0; i < FS_MAX_DIR_ENTRIES; i++) {
         if (!parent_dir.entries[i].in_use) {
             strcpy(parent_dir.entries[i].name, dir_name);
             parent_dir.entries[i].inode = new_inode;
@@ -398,40 +427,74 @@ int fs_create_dir(const char* path) {
 int fs_dir_exists(const char* path) {
     uint32_t inode = find_inode_by_path(path);
     if (inode == 0xFFFFFFFF) return 0;
+    if (inode >= FS_MAX_INODES) return 0;
     return inode_table[inode].type == INODE_TYPE_DIR;
 }
 
 int fs_list_dir(const char* path, char* buffer, int max_size) {
     uint32_t inode = find_inode_by_path(path);
-    if (inode == 0xFFFFFFFF || inode_table[inode].type != INODE_TYPE_DIR) {
+    
+    if (inode == 0xFFFFFFFF || inode >= FS_MAX_INODES) {
+        buffer[0] = '\0';
+        return -1;
+    }
+    
+    if (inode_table[inode].type != INODE_TYPE_DIR) {
+        buffer[0] = '\0';
+        return -1;
+    }
+    
+    if (inode_table[inode].blocks[0] == 0 || 
+        inode_table[inode].blocks[0] >= FS_MAX_BLOCKS) {
+        buffer[0] = '\0';
         return -1;
     }
     
     fs_dir_block_t dir_block;
+    memset(&dir_block, 0, sizeof(fs_dir_block_t));
     read_inode_block(inode_table[inode].blocks[0], (uint8_t*)&dir_block);
     
     int written = 0;
-    for (int i = 0; i < FS_INODE_DIRECT_BLOCKS && written < max_size - 64; i++) {
-        if (dir_block.entries[i].in_use) {
-            if (strcmp(dir_block.entries[i].name, ".") == 0 || 
-                strcmp(dir_block.entries[i].name, "..") == 0) {
-                continue;
-            }
-            
-            int len = strlen(dir_block.entries[i].name);
-            if (written + len + 2 < max_size) {
-                strcpy(buffer + written, dir_block.entries[i].name);
-                written += len;
-                
-                uint32_t entry_inode = dir_block.entries[i].inode;
-                if (inode_table[entry_inode].type == INODE_TYPE_DIR) {
-                    buffer[written++] = '/';
-                }
-                
-                buffer[written++] = '\n';
-            }
+    buffer[0] = '\0';
+    
+    for (int i = 0; i < FS_MAX_DIR_ENTRIES && written < max_size - 64; i++) {
+        if (!dir_block.entries[i].in_use) {
+            continue;
         }
+        
+        if (strcmp(dir_block.entries[i].name, ".") == 0 || 
+            strcmp(dir_block.entries[i].name, "..") == 0) {
+            continue;
+        }
+        
+        int name_len = 0;
+        for (int j = 0; j < FS_MAX_FILENAME && dir_block.entries[i].name[j]; j++) {
+            char c = dir_block.entries[i].name[j];
+            if (c < 32 || c > 126) {
+                name_len = 0;
+                break;
+            }
+            name_len++;
+        }
+        
+        if (name_len == 0) continue;
+        
+        if (written + name_len + 2 >= max_size) {
+            break;
+        }
+        
+        strcpy(buffer + written, dir_block.entries[i].name);
+        written += name_len;
+        
+        uint32_t entry_inode = dir_block.entries[i].inode;
+        if (entry_inode < FS_MAX_INODES && 
+            inode_table[entry_inode].type == INODE_TYPE_DIR) {
+            buffer[written++] = '/';
+        }
+        
+        buffer[written++] = '\n';
     }
+    
     buffer[written] = '\0';
     return written;
 }
@@ -529,7 +592,7 @@ int fs_create_file(const char* path, const uint8_t* data, uint32_t size) {
     read_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
     
     int added = 0;
-    for (int i = 0; i < FS_INODE_DIRECT_BLOCKS; i++) {
+    for (int i = 0; i < FS_MAX_DIR_ENTRIES; i++) {
         if (!parent_dir.entries[i].in_use) {
             strcpy(parent_dir.entries[i].name, file_name);
             parent_dir.entries[i].inode = new_inode;
@@ -595,7 +658,7 @@ int fs_delete_file(const char* path) {
     fs_dir_block_t parent_dir;
     read_inode_block(inode_table[parent_inode].blocks[0], (uint8_t*)&parent_dir);
     
-    for (int i = 0; i < FS_INODE_DIRECT_BLOCKS; i++) {
+    for (int i = 0; i < FS_MAX_DIR_ENTRIES; i++) {
         if (parent_dir.entries[i].in_use && 
             parent_dir.entries[i].inode == file_inode) {
             parent_dir.entries[i].in_use = 0;
