@@ -33,7 +33,6 @@ extern void cmd_date(int argc, char** argv);
 extern void cmd_shutdown(int argc, char** argv);
 extern void cmd_reboot(int argc, char** argv);
 extern void cmd_ping(int argc, char** argv);
-extern void cmd_nettest(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",     cmd_help},
@@ -52,7 +51,6 @@ static const command_t commands[] = {
     {"shutdown", cmd_shutdown},
     {"reboot",   cmd_reboot},
     {"ping",     cmd_ping},
-    {"nettest",  cmd_nettest}, 
 };
 
 static const int num_commands = sizeof(commands) / sizeof(command_t);

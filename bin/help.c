@@ -22,5 +22,4 @@ void cmd_help(int argc, char** argv) {
     screen_print("shutdown  - Power off the system\n");
     screen_print("reboot    - Restart the system\n\n");
     screen_print("ping      - Test network connectivity\n");
-    screen_print("nettest   - Test network hardware\n");
 }

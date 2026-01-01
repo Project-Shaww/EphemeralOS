@@ -17,7 +17,6 @@ void cmd_whoami(int argc, char** argv);
 void cmd_shutdown(int argc, char** argv);
 void cmd_reboot(int argc, char** argv);
 void cmd_ping(int argc, char** argv);
-void cmd_nettest(int argc, char** argv);
 
 char* shell_get_current_dir(void);
 char* shell_get_username(void);
