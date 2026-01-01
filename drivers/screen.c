@@ -10,17 +10,21 @@ static uint8_t current_background = 0x00;
 #define SCREEN_HEIGHT 25
 #define VIDEO_MEMORY 0xB8000
 
+static void outb(uint16_t port, uint8_t value) {
+    asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
 static void update_cursor(void) {
     int pos = cursor_y * SCREEN_WIDTH + cursor_x;
     
     uint8_t high = (pos >> 8) & 0xFF;
     uint8_t low = pos & 0xFF;
     
-    asm volatile("outb %0, $0x3D4" : : "a"((uint8_t)0x0E));
-    asm volatile("outb %0, $0x3D5" : : "a"(high));
+    outb(0x3D4, 0x0E);
+    outb(0x3D5, high);
     
-    asm volatile("outb %0, $0x3D4" : : "a"((uint8_t)0x0F));
-    asm volatile("outb %0, $0x3D5" : : "a"(low));
+    outb(0x3D4, 0x0F);
+    outb(0x3D5, low);
 }
 
 static void scroll_down(void) {

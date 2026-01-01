@@ -4,7 +4,7 @@
 #include "../drivers/keyboard.h"
 #include "../fs/filesystem.h"
 #include "../bin/commands.h"
-#include "../kernel/kernel.h"   // <-- AQUÍ está strcpy, strcmp, strlen, etc.
+#include "../kernel/kernel.h"
 
 #define MAX_ARGS     20
 #define MAX_ARG_LEN  64
@@ -104,6 +104,39 @@ static void parse_command(const char* input, char** argv, int* argc) {
 }
 
 /* =========================
+   Helper: Get display path (with ~)
+   ========================= */
+
+static void get_display_path(char* output) {
+    // Construir el home del usuario: /home/username
+    char user_home[128];
+    strcpy(user_home, "/home/");
+    strcat(user_home, username);
+    
+    size_t home_len = strlen(user_home);
+    size_t current_len = strlen(current_dir);
+    
+    // Si current_dir es exactamente el home, mostrar solo ~
+    if (strcmp(current_dir, user_home) == 0) {
+        strcpy(output, "~");
+        return;
+    }
+    
+    // Si current_dir empieza con /home/username/, reemplazar con ~/
+    if (current_len > home_len && 
+        current_dir[home_len] == '/' &&
+        strncmp(current_dir, user_home, home_len) == 0) {
+        
+        strcpy(output, "~");
+        strcat(output, current_dir + home_len);
+        return;
+    }
+    
+    // Si no está en home, mostrar ruta completa
+    strcpy(output, current_dir);
+}
+
+/* =========================
    Prompt
    ========================= */
 
@@ -123,8 +156,12 @@ static void print_prompt(void) {
     screen_set_color(0x0F, 0x00);
     screen_print(":");
 
+    // Usar display_path en vez de current_dir directo
+    char display_path[256];
+    get_display_path(display_path);
+    
     screen_set_color(0x0E, 0x00);
-    screen_print(current_dir);
+    screen_print(display_path);
 
     screen_set_color(0x0F, 0x00);
     screen_print("$ ");
