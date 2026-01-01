@@ -3,9 +3,19 @@
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/disk.h"
+#include "../drivers/rtc.h"
+#include "../drivers/network.h"
+#include "../drivers/pci.h"
 #include "../fs/filesystem.h"
 #include "../installer/installer.h"
 #include "../shell/shell.h"
+#include "../net/ethernet.h"
+#include "../net/arp.h"
+#include "../net/ip.h"
+#include "../net/icmp.h"
+#include "../net/udp.h"
+#include "../net/dns.h"
+#include "../net/ntp.h"
 
 static void keyboard_getline_password(char* buffer, int max_length) {
     int index = 0;
@@ -46,7 +56,6 @@ static void shutdown_system(void) {
     }
 }
 
-// Helper para leer un scancode del teclado sin usar keyboard_get_scancode()
 static uint8_t read_keyboard_direct(void) {
     while (1) {
         uint8_t status;
@@ -63,8 +72,7 @@ static int show_continue_menu(void) {
     int selected = 0;
     int screen_row = 20;
     
-    // Vaciar buffer del teclado MUCHO más agresivamente
-    for (volatile int d = 0; d < 10000000; d++);  // Delay largo
+    for (volatile int d = 0; d < 10000000; d++);
     
     for (int i = 0; i < 100; i++) {
         uint8_t status;
@@ -76,7 +84,6 @@ static int show_continue_menu(void) {
         for (volatile int j = 0; j < 10000; j++);
     }
     
-    // Dibujar el menú UNA sola vez al inicio
     screen_set_row(screen_row);
     screen_set_color(0x0F, 0x00);
     screen_print("                                          ");
@@ -96,7 +103,6 @@ static int show_continue_menu(void) {
     screen_print("  Use LEFT/RIGHT arrows, then ENTER     ");
     
     while (1) {
-        // Solo actualizar las opciones, no todo
         screen_set_row(screen_row + 4);
         if (selected == 0) {
             screen_set_color(0x00, 0x0F);
@@ -117,32 +123,28 @@ static int show_continue_menu(void) {
             screen_print("    No  ");
         }
         
-        // Leer scancode directamente
         uint8_t scancode = read_keyboard_direct();
         
-        // Ignorar key releases (bit 7 = 1)
         if (scancode & 0x80) {
             continue;
         }
         
-        // CAMBIO: Usar LEFT/RIGHT en vez de UP/DOWN
-        if (scancode == 0x4B) {  // Flecha IZQUIERDA
+        if (scancode == 0x4B) {
             selected = 0;
             for (volatile int i = 0; i < 500000; i++);
-        } else if (scancode == 0x4D) {  // Flecha DERECHA
+        } else if (scancode == 0x4D) {
             selected = 1;
             for (volatile int i = 0; i < 500000; i++);
-        } else if (scancode == 0x48) {  // Flecha ARRIBA (también funciona)
+        } else if (scancode == 0x48) {
             selected = 0;
             for (volatile int i = 0; i < 500000; i++);
-        } else if (scancode == 0x50) {  // Flecha ABAJO (también funciona)
+        } else if (scancode == 0x50) {
             selected = 1;
             for (volatile int i = 0; i < 500000; i++);
-        } else if (scancode == 0x1C) {  // Enter
-            // Esperar a que se suelte Enter
+        } else if (scancode == 0x1C) {
             while (1) {
                 scancode = read_keyboard_direct();
-                if (scancode == 0x9C) break;  // Enter release
+                if (scancode == 0x9C) break;
             }
             return selected;
         }
@@ -156,19 +158,17 @@ static int do_login(void) {
 
     fs_get_username(stored_username);
 
-    // Primera vez, solo imprimir "login:"
     screen_set_color(0x0F, 0x00);
     screen_print("login: ");
     keyboard_getline(username_input, sizeof(username_input));
 
     if (strcmp(username_input, stored_username) != 0) {
         screen_print("Login incorrect\n");
-        // En intentos fallidos, imprimir de nuevo el prompt completo
         char hostname[64];
         fs_get_hostname(hostname);
         screen_print(hostname);
         screen_print(" login: ");
-        return do_login();  // Recursión
+        return do_login();
     }
 
     screen_print("Password: ");
@@ -179,12 +179,11 @@ static int do_login(void) {
     }
 
     screen_print("Login incorrect\n");
-    // Si falla, mostrar prompt completo de nuevo
     char hostname[64];
     fs_get_hostname(hostname);
     screen_print(hostname);
     screen_print(" login: ");
-    return do_login();  // Recursión
+    return do_login();
 }
 
 void kernel_main(void) {
@@ -193,6 +192,39 @@ void kernel_main(void) {
 
     screen_print("EphemeralOS v1.0\n");
     screen_print("================\n\n");
+
+    // Inicializar RTC
+    rtc_init();
+    screen_print("[RTC] Real Time Clock initialized\n");
+
+    // Inicializar PCI y Network
+    pci_init();
+    screen_print("[PCI] PCI bus initialized\n");
+    
+    network_init();
+    
+    // Inicializar stack de red
+    eth_init();
+    arp_init();
+    ip_init();
+    icmp_init();
+    udp_init();
+    dns_init();
+    ntp_init();
+    
+    if (network_is_ready()) {
+        screen_print("[NET] Network stack initialized\n");
+        
+        // Configurar IP de QEMU (10.0.2.15)
+        network_set_ip(0x0A00020F); // 10.0.2.15
+        screen_print("[NET] IP configured: 10.0.2.15\n");
+        
+        // Configurar DNS de QEMU (10.0.2.3)
+        dns_set_server(0x0A000203); // 10.0.2.3
+        screen_print("[NET] DNS server: 10.0.2.3\n");
+    }
+    
+    screen_print("\n");
 
     if (!fs_check_installed()) {
         installer_run();
@@ -219,18 +251,14 @@ void kernel_main(void) {
     keyboard_init();
     fs_init();
 
-    // ARREGLO: Obtener hostname ANTES de clear
     char hostname[64];
     fs_get_hostname(hostname);
 
-    // Clear + init + delay para sincronizar todo
     screen_clear();
     screen_init();
     
-    // Pequeño delay para que el VGA se estabilice
     for (volatile int i = 0; i < 1000000; i++);
     
-    // Vaciar buffer del teclado completamente
     for (int i = 0; i < 50; i++) {
         uint8_t status;
         asm volatile("inb $0x64, %0" : "=a"(status));
@@ -240,12 +268,10 @@ void kernel_main(void) {
         }
     }
     
-    // Imprimir el prompt de login UNA SOLA VEZ
     screen_set_color(0x0F, 0x00);
     screen_print(hostname);
     screen_print(" ");
     
-    // Llamar a do_login SIN imprimir "login:" aquí
     do_login();
 
     screen_print("\n");
@@ -255,7 +281,56 @@ void kernel_main(void) {
     screen_print("Welcome to ");
     screen_print(hostname);
     screen_print("!\n");
-    screen_print("Last login: Mon Jan  1 00:00:00 2025\n\n");
+    
+    // Mostrar fecha/hora real del login
+    rtc_time_t time;
+    rtc_get_time(&time);
+    
+    const char* weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    
+    screen_print("Last login: ");
+    if (time.weekday >= 1 && time.weekday <= 7) {
+        screen_print(weekdays[time.weekday - 1]);
+    }
+    screen_print(" ");
+    if (time.month >= 1 && time.month <= 12) {
+        screen_print(months[time.month - 1]);
+    }
+    screen_print(" ");
+    
+    char num[3];
+    if (time.day < 10) screen_print(" ");
+    num[0] = '0' + (time.day / 10);
+    num[1] = '0' + (time.day % 10);
+    num[2] = '\0';
+    if (num[0] != '0') screen_print_char(num[0]);
+    screen_print_char(num[1]);
+    
+    screen_print(" ");
+    num[0] = '0' + (time.hour / 10);
+    num[1] = '0' + (time.hour % 10);
+    screen_print(num);
+    screen_print(":");
+    num[0] = '0' + (time.minute / 10);
+    num[1] = '0' + (time.minute % 10);
+    screen_print(num);
+    screen_print(":");
+    num[0] = '0' + (time.second / 10);
+    num[1] = '0' + (time.second % 10);
+    screen_print(num);
+    screen_print(" ");
+    
+    // Imprimir año
+    char year[5];
+    year[0] = '0' + (time.year / 1000);
+    year[1] = '0' + ((time.year / 100) % 10);
+    year[2] = '0' + ((time.year / 10) % 10);
+    year[3] = '0' + (time.year % 10);
+    year[4] = '\0';
+    screen_print(year);
+    screen_print("\n\n");
 
     shell_init();
     shell_run();

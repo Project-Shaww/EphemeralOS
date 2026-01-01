@@ -12,10 +12,6 @@
 static char current_dir[256] = "/";
 static char username[64] = "";
 
-/* =========================
-   Command table
-   ========================= */
-
 typedef struct {
     const char* name;
     void (*func)(int argc, char** argv);
@@ -36,6 +32,8 @@ extern void cmd_uname(int argc, char** argv);
 extern void cmd_date(int argc, char** argv);
 extern void cmd_shutdown(int argc, char** argv);
 extern void cmd_reboot(int argc, char** argv);
+extern void cmd_ping(int argc, char** argv);
+extern void cmd_nettest(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",     cmd_help},
@@ -53,13 +51,11 @@ static const command_t commands[] = {
     {"date",     cmd_date},
     {"shutdown", cmd_shutdown},
     {"reboot",   cmd_reboot},
+    {"ping",     cmd_ping},
+    {"nettest",  cmd_nettest}, 
 };
 
 static const int num_commands = sizeof(commands) / sizeof(command_t);
-
-/* =========================
-   Argument parsing (NO malloc)
-   ========================= */
 
 static char argv_buffer[MAX_ARGS][MAX_ARG_LEN];
 
@@ -103,12 +99,7 @@ static void parse_command(const char* input, char** argv, int* argc) {
     }
 }
 
-/* =========================
-   Helper: Get display path (with ~)
-   ========================= */
-
 static void get_display_path(char* output) {
-    // Construir el home del usuario: /home/username
     char user_home[128];
     strcpy(user_home, "/home/");
     strcat(user_home, username);
@@ -116,13 +107,11 @@ static void get_display_path(char* output) {
     size_t home_len = strlen(user_home);
     size_t current_len = strlen(current_dir);
     
-    // Si current_dir es exactamente el home, mostrar solo ~
     if (strcmp(current_dir, user_home) == 0) {
         strcpy(output, "~");
         return;
     }
     
-    // Si current_dir empieza con /home/username/, reemplazar con ~/
     if (current_len > home_len && 
         current_dir[home_len] == '/' &&
         strncmp(current_dir, user_home, home_len) == 0) {
@@ -132,13 +121,8 @@ static void get_display_path(char* output) {
         return;
     }
     
-    // Si no está en home, mostrar ruta completa
     strcpy(output, current_dir);
 }
-
-/* =========================
-   Prompt
-   ========================= */
 
 static void print_prompt(void) {
     screen_set_color(0x0A, 0x00);
@@ -156,7 +140,6 @@ static void print_prompt(void) {
     screen_set_color(0x0F, 0x00);
     screen_print(":");
 
-    // Usar display_path en vez de current_dir directo
     char display_path[256];
     get_display_path(display_path);
     
@@ -166,10 +149,6 @@ static void print_prompt(void) {
     screen_set_color(0x0F, 0x00);
     screen_print("$ ");
 }
-
-/* =========================
-   Shell lifecycle
-   ========================= */
 
 void shell_init(void) {
     fs_get_username(username);
@@ -220,10 +199,6 @@ void shell_run(void) {
         }
     }
 }
-
-/* =========================
-   Accessors
-   ========================= */
 
 char* shell_get_current_dir(void) {
     return current_dir;
